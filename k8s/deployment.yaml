@@ -1,0 +1,124 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: cybershield-mysql
+  labels:
+    app: cybershield-mysql
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: cybershield-mysql
+  template:
+    metadata:
+      labels:
+        app: cybershield-mysql
+    spec:
+      containers:
+      - name: mysql
+        image: mysql:8.0
+        env:
+        - name: MYSQL_ROOT_PASSWORD
+          value: "root"
+        - name: MYSQL_DATABASE
+          value: "cybershield_db"
+        ports:
+        - containerPort: 3306
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: cybershield-ai
+  labels:
+    app: cybershield-ai
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: cybershield-ai
+  template:
+    metadata:
+      labels:
+        app: cybershield-ai
+    spec:
+      containers:
+      - name: ai-service
+        image: cybershield-ai:latest
+        imagePullPolicy: IfNotPresent
+        ports:
+        - containerPort: 8000
+        resources:
+          limits:
+            memory: "1Gi"
+            cpu: "1000m"
+          requests:
+            memory: "512Mi"
+            cpu: "250m"
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: cybershield-backend
+  labels:
+    app: cybershield-backend
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: cybershield-backend
+  template:
+    metadata:
+      labels:
+        app: cybershield-backend
+    spec:
+      containers:
+      - name: backend
+        image: cybershield-backend:latest
+        imagePullPolicy: IfNotPresent
+        env:
+        - name: SPRING_PROFILES_ACTIVE
+          value: "mysql"
+        - name: AI_SERVICE_URL
+          value: "http://cybershield-ai-svc:8000"
+        - name: MYSQL_HOST
+          value: "cybershield-mysql-svc"
+        - name: MYSQL_PORT
+          value: "3306"
+        - name: MYSQL_DB
+          value: "cybershield_db"
+        - name: MYSQL_USER
+          value: "root"
+        - name: MYSQL_PASSWORD
+          value: "root"
+        ports:
+        - containerPort: 8080
+        resources:
+          limits:
+            memory: "1Gi"
+            cpu: "1000m"
+          requests:
+            memory: "512Mi"
+            cpu: "250m"
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: cybershield-frontend
+  labels:
+    app: cybershield-frontend
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: cybershield-frontend
+  template:
+    metadata:
+      labels:
+        app: cybershield-frontend
+    spec:
+      containers:
+      - name: frontend
+        image: cybershield-frontend:latest
+        imagePullPolicy: IfNotPresent
+        ports:
+        - containerPort: 80

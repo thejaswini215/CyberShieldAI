@@ -1,0 +1,665 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>CyberShield AI — Phishing URL Detection & Defense</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  <style>
+    body {
+      font-family: 'Plus Jakarta Sans', sans-serif;
+      background-color: #0b0f19;
+      color: #e2e8f0;
+    }
+    .code-font {
+      font-family: 'JetBrains Mono', monospace;
+    }
+    .cyber-glow-cyan {
+      box-shadow: 0 0 25px -5px rgba(6, 182, 212, 0.25);
+    }
+    .cyber-glow-red {
+      box-shadow: 0 0 30px -5px rgba(239, 68, 68, 0.35);
+    }
+    .cyber-glow-green {
+      box-shadow: 0 0 30px -5px rgba(34, 197, 94, 0.35);
+    }
+    .cyber-glow-amber {
+      box-shadow: 0 0 30px -5px rgba(245, 158, 11, 0.35);
+    }
+    .pulse-slow {
+      animation: pulse 3s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+    }
+    @keyframes pulse {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.6; }
+    }
+  </style>
+</head>
+<body class="min-h-screen selection:bg-cyan-500 selection:text-black">
+  <div id="root"></div>
+
+  <script type="text/babel">
+    const { useState, useEffect } = React;
+
+    const SAMPLE_URLS = [
+      { label: "Legitimate (VTOP)", url: "https://vtop.vitap.ac.in/vtop/login" },
+      { label: "Legitimate (WhatsApp)", url: "https://web.whatsapp.com/" },
+      { label: "Legitimate (Google)", url: "https://www.google.com" },
+      { label: "Medium Risk (Unverified Portal)", url: "https://internal-docs.myproject.io/account-summary" },
+      { label: "High Risk (IP Host)", url: "http://192.168.1.105/paypal/webscr?cmd=_login-run" },
+      { label: "High Risk (Spoofed TLD)", url: "http://apple-security-verify-id9918.xyz/login/auth" }
+    ];
+
+    function App() {
+      const [url, setUrl] = useState("");
+      const [loading, setLoading] = useState(false);
+      const [result, setResult] = useState(null);
+      const [error, setError] = useState(null);
+      const [backendStatus, setBackendStatus] = useState("Checking...");
+      const [aiServiceStatus, setAiServiceStatus] = useState("Checking...");
+      const [history, setHistory] = useState([]);
+      const [stats, setStats] = useState({ total: 0, phishing: 0, legitimate: 0, highRisk: 0 });
+
+      // Determine backend endpoints (supports 8081 or 8080 dynamically)
+      const [backendUrl, setBackendUrl] = useState("http://localhost:8081");
+      const AI_URL = "http://localhost:8000";
+
+      useEffect(() => {
+        checkHealth();
+        loadHistory();
+      }, [backendUrl]);
+
+      const checkHealth = async () => {
+        // Test Spring Boot on 8081, fallback to 8080
+        let foundBackend = false;
+        for (const candidate of ["http://localhost:8081", "http://localhost:8080"]) {
+          try {
+            const res = await fetch(`${candidate}/api/health`, { method: "GET" });
+            if (res.ok) {
+              setBackendUrl(candidate);
+              setBackendStatus(`Online (${candidate.split(':').pop()})`);
+              foundBackend = true;
+              break;
+            }
+          } catch (e) {}
+        }
+        if (!foundBackend) {
+          setBackendStatus("Offline");
+        }
+
+        // Test Python AI Service
+        try {
+          const res = await fetch(`${AI_URL}/health`, { method: "GET" });
+          if (res.ok) {
+            const data = await res.json();
+            setAiServiceStatus(data.model_loaded ? "Model Ready" : "Service Ready (Heuristics)");
+          } else {
+            setAiServiceStatus("Offline");
+          }
+        } catch (e) {
+          setAiServiceStatus("Offline");
+        }
+      };
+
+      const loadHistory = async () => {
+        try {
+          const res = await fetch(`${backendUrl}/api/history`);
+          if (res.ok) {
+            const data = await res.json();
+            setHistory(data);
+            computeStats(data);
+          }
+        } catch (e) {
+          // Local fallback memory
+          const saved = localStorage.getItem("cybershield_history");
+          if (saved) {
+            const parsed = JSON.parse(saved);
+            setHistory(parsed);
+            computeStats(parsed);
+          }
+        }
+      };
+
+      const computeStats = (data) => {
+        const total = data.length;
+        const phishing = data.filter(d => d.isPhishing).length;
+        const legitimate = total - phishing;
+        const highRisk = data.filter(d => d.riskLevel === "High").length;
+        setStats({ total, phishing, legitimate, highRisk });
+      };
+
+      const handleScan = async (targetUrl = url) => {
+        const trimmed = (targetUrl || "").trim();
+        if (!trimmed) {
+          setError("Please enter a valid URL to analyze.");
+          return;
+        }
+
+        setError(null);
+        setLoading(true);
+
+        try {
+          let scanData = null;
+
+          // Attempt 1: Call Java Spring Boot backend
+          try {
+            const res = await fetch(`${backendUrl}/api/scan`, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ url: trimmed })
+            });
+            if (res.ok) {
+              scanData = await res.json();
+            }
+          } catch (backendErr) {
+            console.log("Spring Boot backend offline, falling back directly to Python AI service...");
+          }
+
+          // Attempt 2: If Spring Boot is down, call Python FastAPI directly
+          if (!scanData) {
+            const res = await fetch(`${AI_URL}/agent/analyze`, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ url: trimmed })
+            });
+            if (res.ok) {
+              scanData = await res.json();
+              scanData.scannedAt = new Date().toISOString();
+            }
+          }
+
+          // Attempt 3: Client-side intelligent heuristic simulator if both servers are starting up
+          if (!scanData) {
+            scanData = clientSideFallbackAnalysis(trimmed);
+          }
+
+          setResult(scanData);
+
+          // Update local history
+          const updatedHistory = [scanData, ...history.filter(h => h.url !== trimmed)].slice(0, 30);
+          setHistory(updatedHistory);
+          computeStats(updatedHistory);
+          localStorage.setItem("cybershield_history", JSON.stringify(updatedHistory));
+
+        } catch (err) {
+          setError("Analysis failed: " + err.message);
+        } finally {
+          setLoading(false);
+        }
+      };
+
+      const clientSideFallbackAnalysis = (target) => {
+        const lower = target.toLowerCase();
+        const indicators = [];
+        const isIp = /\b\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}\b/.test(lower);
+        const hasAt = lower.includes("@");
+        const isLong = lower.length > 70;
+        const hasDoubleSlash = lower.slice(8).includes("//");
+        const hasSuspiciousKw = ["login", "verify", "secure", "banking", "update", "paypal", "appleid"].some(k => lower.includes(k));
+        const isHttps = lower.startsWith("https://");
+
+        if (isIp) indicators.push("Raw IP address used in host URL instead of trusted domain.");
+        if (hasAt) indicators.push("Suspicious '@' symbol detected in URL authorization path.");
+        if (isLong) indicators.push(`Excessively long URL string (${lower.length} chars) indicative of obfuscation.`);
+        if (hasDoubleSlash) indicators.push("Multiple '//' redirect paths detected.");
+        if (hasSuspiciousKw) indicators.push("Contains sensitive authentication keywords often targeted by phishing kits.");
+        if (!isHttps) indicators.push("Unencrypted HTTP communication.");
+
+        const isPhishing = indicators.length >= 2 || isIp || hasAt;
+        const confidence = isPhishing ? 0.92 : 0.88;
+        const riskLevel = indicators.length >= 3 ? "High" : (isPhishing ? "Medium" : "Low");
+
+        return {
+          id: Date.now(),
+          url: target,
+          prediction: isPhishing ? "Potential Phishing" : "Likely Legitimate",
+          isPhishing: isPhishing,
+          confidence: confidence,
+          riskLevel: riskLevel,
+          summary: isPhishing
+            ? "CyberShield AI Client Analyzer detected high-risk markers consistent with credential harvesting portals."
+            : "CyberShield AI evaluated this URL as legitimate based on domain structure and standard naming conventions.",
+          suspiciousIndicators: indicators,
+          recommendations: isPhishing ? [
+            "Do NOT input account passwords or payment credentials on this website.",
+            "Verify the official domain by visiting the service directly via bookmark.",
+            "Report this URL to your security operations team or email provider."
+          ] : [
+            "Always check the browser padlock icon and address bar spelling before submitting private information.",
+            "Maintain MFA (Multi-Factor Authentication) on your online accounts."
+          ],
+          scannedAt: new Date().toISOString()
+        };
+      };
+
+      return (
+        <div className="min-h-screen flex flex-col bg-[#0a0e17] text-slate-200">
+          {/* Header */}
+          <header className="border-b border-slate-800 bg-[#0f172a]/70 backdrop-blur sticky top-0 z-50">
+            <div className="max-w-7xl mx-auto px-4 py-4 flex flex-col sm:flex-row items-center justify-between gap-4">
+              <div className="flex items-center space-x-3">
+                <div className="h-10 w-10 rounded-xl bg-gradient-to-tr from-cyan-600 to-emerald-400 flex items-center justify-center font-bold text-black text-xl shadow-lg shadow-cyan-500/20">
+                  🛡️
+                </div>
+                <div>
+                  <h1 className="text-xl font-bold tracking-tight text-white flex items-center gap-2">
+                    CyberShield <span className="text-cyan-400">AI</span>
+                    <span className="text-xs font-mono uppercase px-2 py-0.5 rounded-full bg-cyan-950/80 text-cyan-300 border border-cyan-800/60">v1.0 ML + Agent</span>
+                  </h1>
+                  <p className="text-xs text-slate-400">Autonomous Phishing Detection & Neural Threat Analysis</p>
+                </div>
+              </div>
+
+              {/* Status Pills */}
+              <div className="flex items-center space-x-3 text-xs">
+                <div className="flex items-center space-x-2 bg-slate-900/90 border border-slate-800 px-3 py-1.5 rounded-lg">
+                  <span className={`h-2 w-2 rounded-full ${backendStatus.includes('Online') ? 'bg-emerald-400 shadow-sm shadow-emerald-400' : 'bg-amber-400'}`}></span>
+                  <span className="text-slate-400">Spring Boot:</span>
+                  <span className="font-semibold text-slate-200">{backendStatus}</span>
+                </div>
+                <div className="flex items-center space-x-2 bg-slate-900/90 border border-slate-800 px-3 py-1.5 rounded-lg">
+                  <span className={`h-2 w-2 rounded-full ${aiServiceStatus.includes('Ready') ? 'bg-emerald-400 shadow-sm shadow-emerald-400' : 'bg-amber-400'}`}></span>
+                  <span className="text-slate-400">Python AI:</span>
+                  <span className="font-semibold text-slate-200">{aiServiceStatus}</span>
+                </div>
+              </div>
+            </div>
+          </header>
+
+          <main className="max-w-7xl mx-auto px-4 py-8 flex-1 w-full space-y-8">
+            {/* Stats Row */}
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+              <div className="bg-slate-900/60 border border-slate-800/80 p-4 rounded-xl">
+                <div className="text-xs uppercase tracking-wider text-slate-400 font-medium">Total Scans</div>
+                <div className="text-2xl font-extrabold text-white mt-1 code-font">{stats.total}</div>
+              </div>
+              <div className="bg-slate-900/60 border border-slate-800/80 p-4 rounded-xl">
+                <div className="text-xs uppercase tracking-wider text-emerald-400 font-medium">Legitimate URLs</div>
+                <div className="text-2xl font-extrabold text-emerald-400 mt-1 code-font">{stats.legitimate}</div>
+              </div>
+              <div className="bg-slate-900/60 border border-slate-800/80 p-4 rounded-xl">
+                <div className="text-xs uppercase tracking-wider text-rose-400 font-medium">Phishing Detected</div>
+                <div className="text-2xl font-extrabold text-rose-400 mt-1 code-font">{stats.phishing}</div>
+              </div>
+              <div className="bg-slate-900/60 border border-slate-800/80 p-4 rounded-xl">
+                <div className="text-xs uppercase tracking-wider text-amber-400 font-medium">High-Risk Threats</div>
+                <div className="text-2xl font-extrabold text-amber-400 mt-1 code-font">{stats.highRisk}</div>
+              </div>
+            </div>
+
+            {/* URL Input Box */}
+            <div className="bg-slate-900/80 border border-slate-800 rounded-2xl p-6 shadow-2xl relative overflow-hidden cyber-glow-cyan">
+              <div className="absolute top-0 right-0 w-96 h-96 bg-cyan-500/5 rounded-full blur-3xl pointer-events-none"></div>
+
+              <div className="mb-4">
+                <h2 className="text-lg font-bold text-white flex items-center gap-2">
+                  <span>Inspect Target URL</span>
+                </h2>
+                <p className="text-sm text-slate-400">
+                  Submit any suspicious link, login page, or domain to evaluate against the trained PhiUSIIL character n-gram model.
+                </p>
+              </div>
+
+              <form onSubmit={(e) => { e.preventDefault(); handleScan(); }} className="flex flex-col sm:flex-row gap-3">
+                <div className="relative flex-1">
+                  <span className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-500 code-font text-sm">🔗</span>
+                  <input
+                    type="text"
+                    value={url}
+                    onChange={(e) => setUrl(e.target.value)}
+                    placeholder="https://example.com/login or http://suspicious-link.xyz..."
+                    className="w-full bg-slate-950 border border-slate-700 focus:border-cyan-500 focus:ring-1 focus:ring-cyan-500 rounded-xl pl-11 pr-4 py-3.5 text-sm code-font text-white placeholder-slate-500 transition outline-none"
+                  />
+                </div>
+                <button
+                  type="submit"
+                  disabled={loading}
+                  className={`px-8 py-3.5 rounded-xl font-bold text-sm tracking-wide transition flex items-center justify-center gap-2 shadow-lg ${
+                    loading 
+                      ? 'bg-slate-800 text-slate-400 cursor-not-allowed'
+                      : 'bg-gradient-to-r from-cyan-500 to-emerald-500 text-black hover:opacity-95 shadow-cyan-500/25'
+                  }`}
+                >
+                  {loading ? (
+                    <>
+                      <div className="w-4 h-4 border-2 border-black border-t-transparent rounded-full animate-spin"></div>
+                      <span>Analyzing...</span>
+                    </>
+                  ) : (
+                    <>
+                      <span>Analyze URL</span>
+                      <span>⚡</span>
+                    </>
+                  )}
+                </button>
+              </form>
+
+              {/* Quick sample chips */}
+              <div className="mt-4 flex flex-wrap items-center gap-2 text-xs">
+                <span className="text-slate-400">Try quick sample:</span>
+                {SAMPLE_URLS.map((sample, idx) => (
+                  <button
+                    key={idx}
+                    type="button"
+                    onClick={() => { setUrl(sample.url); handleScan(sample.url); }}
+                    className="bg-slate-800/80 hover:bg-slate-700/80 border border-slate-700/60 px-2.5 py-1 rounded-md text-slate-300 hover:text-white transition"
+                  >
+                    {sample.label}
+                  </button>
+                ))}
+              </div>
+
+              {error && (
+                <div className="mt-4 p-3 bg-rose-950/60 border border-rose-800 text-rose-300 rounded-lg text-sm flex items-center gap-2">
+                  <span>⚠️</span>
+                  <span>{error}</span>
+                </div>
+              )}
+            </div>
+
+            {/* Analysis Result Card */}
+            {result && (
+              <div className={`rounded-2xl border p-6 transition-all duration-300 ${
+                result.riskLevel === 'High'
+                  ? 'bg-rose-950/20 border-rose-800/80 cyber-glow-red'
+                  : result.riskLevel === 'Medium'
+                  ? 'bg-amber-950/20 border-amber-800/80 cyber-glow-amber'
+                  : 'bg-emerald-950/20 border-emerald-800/80 cyber-glow-green'
+              }`}>
+                {/* Result Header */}
+                <div className="flex flex-col md:flex-row md:items-center justify-between pb-6 border-b border-slate-800/80 gap-4">
+                  <div className="flex items-center space-x-4">
+                    <div className={`h-14 w-14 rounded-2xl flex items-center justify-center text-3xl shadow-lg ${
+                      result.riskLevel === 'High'
+                        ? 'bg-rose-500/20 text-rose-400 border border-rose-500/30'
+                        : result.riskLevel === 'Medium'
+                        ? 'bg-amber-500/20 text-amber-400 border border-amber-500/30'
+                        : 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30'
+                    }`}>
+                      {result.riskLevel === 'High' ? '🚨' : result.riskLevel === 'Medium' ? '⚠️' : '🛡️'}
+                    </div>
+                    <div>
+                      <div className="flex items-center gap-3">
+                        <span className={`text-2xl font-extrabold tracking-tight ${
+                          result.riskLevel === 'High' ? 'text-rose-400' :
+                          result.riskLevel === 'Medium' ? 'text-amber-400' : 'text-emerald-400'
+                        }`}>
+                          {result.prediction}
+                        </span>
+                        <span className={`px-2.5 py-0.5 rounded-full text-xs font-bold uppercase tracking-wider ${
+                          result.riskLevel === 'High' ? 'bg-rose-500/20 text-rose-300 border border-rose-500/30' :
+                          result.riskLevel === 'Medium' ? 'bg-amber-500/20 text-amber-300 border border-amber-500/30' :
+                          'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30'
+                        }`}>
+                          Risk: {result.riskLevel}
+                        </span>
+                      </div>
+                      <p className="text-xs text-slate-400 mt-1 code-font break-all">
+                        Target: <span className="text-slate-200">{result.url}</span>
+                      </p>
+                    </div>
+                  </div>
+
+                  {/* Dual Meters: Threat Score & Model Confidence */}
+                  <div className="flex items-center gap-3">
+                    {/* Threat Score Meter */}
+                    <div className="bg-slate-900/90 border border-slate-800 p-3.5 rounded-xl flex items-center space-x-3">
+                      <div>
+                        <div className="text-[10px] text-slate-400 uppercase font-semibold">Threat Score</div>
+                        <div className={`text-xl font-extrabold code-font ${
+                          result.riskLevel === 'High' ? 'text-rose-400' :
+                          result.riskLevel === 'Medium' ? 'text-amber-400' : 'text-emerald-400'
+                        }`}>
+                          {result.risk_score ?? (result.riskLevel === 'High' ? 88 : result.riskLevel === 'Medium' ? 52 : 5)}<span className="text-xs text-slate-500 font-normal">/100</span>
+                        </div>
+                      </div>
+                      <div className="w-12 h-2 bg-slate-800 rounded-full overflow-hidden">
+                        <div
+                          className={`h-full ${
+                            result.riskLevel === 'High' ? 'bg-rose-500' :
+                            result.riskLevel === 'Medium' ? 'bg-amber-400' : 'bg-emerald-500'
+                          }`}
+                          style={{ width: `${result.risk_score ?? (result.riskLevel === 'High' ? 88 : result.riskLevel === 'Medium' ? 52 : 5)}%` }}
+                        ></div>
+                      </div>
+                    </div>
+
+                    {/* Model Confidence Gauge */}
+                    <div className="bg-slate-900/90 border border-slate-800 p-3.5 rounded-xl flex items-center space-x-3">
+                      <div>
+                        <div className="text-[10px] text-slate-400 uppercase font-semibold">Model Confidence</div>
+                        <div className="text-xl font-extrabold text-white code-font">
+                          {(result.confidence * 100).toFixed(1)}%
+                        </div>
+                      </div>
+                      <div className="w-12 h-2 bg-slate-800 rounded-full overflow-hidden">
+                        <div
+                          className={`h-full ${
+                            result.riskLevel === 'High' ? 'bg-rose-500' :
+                            result.riskLevel === 'Medium' ? 'bg-amber-400' : 'bg-emerald-500'
+                          }`}
+                          style={{ width: `${result.confidence * 100}%` }}
+                        ></div>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                {/* AI Agent Findings & Breakdown */}
+                <div className="mt-6 grid grid-cols-1 md:grid-cols-2 gap-6">
+                  {/* Left: AI Agent Summary & Triggered Parameters */}
+                  <div className="bg-slate-900/70 border border-slate-800/80 rounded-xl p-5 space-y-4">
+                    <div className="flex items-center space-x-2 text-sm font-bold text-cyan-300">
+                      <span>🤖</span>
+                      <span>AI Agent Threat Assessment</span>
+                    </div>
+                    <p className="text-sm text-slate-300 leading-relaxed">
+                      {result.summary}
+                    </p>
+
+                    {/* Triggered Parameters / Threat Factors */}
+                    {result.triggered_parameters && result.triggered_parameters.length > 0 && (
+                      <div className="space-y-2 pt-2 border-t border-slate-800">
+                        <div className="text-xs uppercase tracking-wider text-slate-400 font-bold">Triggered Risk Parameters:</div>
+                        <ul className="space-y-1.5 text-xs text-slate-300">
+                          {result.triggered_parameters.map((param, i) => (
+                            <li key={i} className="flex items-start space-x-2">
+                              <span className={
+                                param.startsWith('Severe') ? 'text-rose-400 font-bold' :
+                                param.startsWith('High') ? 'text-rose-400' :
+                                param.startsWith('Medium') ? 'text-amber-400' : 'text-emerald-400'
+                              }>•</span>
+                              <span>{param}</span>
+                            </li>
+                          ))}
+                        </ul>
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Right: Security Recommendations */}
+                  <div className="bg-slate-900/70 border border-slate-800/80 rounded-xl p-5 space-y-4">
+                    <div className="flex items-center space-x-2 text-sm font-bold text-emerald-300">
+                      <span>✅</span>
+                      <span>Recommended Safe Actions</span>
+                    </div>
+
+                    <ul className="space-y-2.5 text-xs text-slate-300">
+                      {(result.recommendations || []).map((rec, i) => (
+                        <li key={i} className="flex items-start space-x-2 bg-slate-950/60 p-2.5 rounded-lg border border-slate-800/60">
+                          <span className={
+                            result.riskLevel === 'High' ? 'text-rose-400 font-bold' :
+                            result.riskLevel === 'Medium' ? 'text-amber-400 font-bold' :
+                            'text-emerald-400 font-bold'
+                          }>✓</span>
+                          <span>{rec}</span>
+                        </li>
+                      ))}
+                    </ul>
+
+                    <div className="text-[11px] text-slate-500 italic pt-2">
+                      Notice: AI predictions are probabilistic estimations based on URL character features and trained dataset patterns. They do not substitute rigorous security verification.
+                    </div>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* Risk Parameters Matrix Reference Card */}
+            <div className="bg-slate-900/70 border border-slate-800 rounded-2xl p-6">
+              <div className="flex items-center justify-between mb-4">
+                <h3 className="text-sm font-bold text-white flex items-center gap-2">
+                  <span>🛡️ Risk Classification & Parameter Evaluation Matrix</span>
+                </h3>
+                <span className="text-[11px] text-slate-500">Autonomous 3-Tier Multi-Factor Evaluation</span>
+              </div>
+
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                {/* Low Risk Card */}
+                <div className="bg-slate-950/60 border border-emerald-900/50 rounded-xl p-4 space-y-2">
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs font-bold text-emerald-400 uppercase tracking-wider flex items-center gap-1.5">
+                      <span className="h-2 w-2 rounded-full bg-emerald-400"></span> Low Risk (Score 0–30)
+                    </span>
+                    <span className="text-[10px] bg-emerald-950/80 text-emerald-300 px-2 py-0.5 rounded border border-emerald-800/60">Likely Legitimate</span>
+                  </div>
+                  <ul className="text-[11px] text-slate-400 space-y-1.5 pt-1">
+                    <li>✓ Verified domain allowlist / official registry (.ac.in, .gov, .edu, Google, Meta, VIT).</li>
+                    <li>✓ Standard HTTPS encryption with clean URL hierarchy.</li>
+                    <li>✓ ML character phishing probability &lt; 35%.</li>
+                    <li>✓ Zero severe credential-harvesting indicators.</li>
+                  </ul>
+                </div>
+
+                {/* Medium Risk Card */}
+                <div className="bg-slate-950/60 border border-amber-900/50 rounded-xl p-4 space-y-2">
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs font-bold text-amber-400 uppercase tracking-wider flex items-center gap-1.5">
+                      <span className="h-2 w-2 rounded-full bg-amber-400"></span> Medium Risk (Score 31–70)
+                    </span>
+                    <span className="text-[10px] bg-amber-950/80 text-amber-300 px-2 py-0.5 rounded border border-amber-800/60">Suspicious / Caution</span>
+                  </div>
+                  <ul className="text-[11px] text-slate-400 space-y-1.5 pt-1">
+                    <li>⚠️ Unverified domain hosting sensitive keywords (/login, /verify, /account).</li>
+                    <li>⚠️ Deep subdomain nesting (&gt;3 dots) or abnormal length (75–110 chars).</li>
+                    <li>⚠️ Ambiguous ML character probability (40%–75% uncertainty).</li>
+                    <li>⚠️ Insecure HTTP connection without confirmed active payload.</li>
+                  </ul>
+                </div>
+
+                {/* High Risk Card */}
+                <div className="bg-slate-950/60 border border-rose-900/50 rounded-xl p-4 space-y-2">
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs font-bold text-rose-400 uppercase tracking-wider flex items-center gap-1.5">
+                      <span className="h-2 w-2 rounded-full bg-rose-400"></span> High Risk (Score 71–100)
+                    </span>
+                    <span className="text-[10px] bg-rose-950/80 text-rose-300 px-2 py-0.5 rounded border border-rose-800/60">Potential Phishing</span>
+                  </div>
+                  <ul className="text-[11px] text-slate-400 space-y-1.5 pt-1">
+                    <li>🚨 Raw IP address used as host (e.g., http://192.168.1.1/...).</li>
+                    <li>🚨 Credential spoofing syntax ('@' symbol or '//' path redirection).</li>
+                    <li>🚨 High-risk throwaway TLDs (.xyz, .top, .tk) with phishing keywords.</li>
+                    <li>🚨 ML confidence &gt; 80% confirmed with multiple structural threats.</li>
+                  </ul>
+                </div>
+              </div>
+            </div>
+
+            {/* Scan History Table */}
+            <div className="bg-slate-900/70 border border-slate-800 rounded-2xl p-6">
+              <div className="flex items-center justify-between mb-4">
+                <h3 className="text-md font-bold text-white flex items-center gap-2">
+                  <span>Scan History & Audit Log</span>
+                  <span className="text-xs bg-slate-800 text-slate-300 px-2 py-0.5 rounded-full code-font">
+                    {history.length}
+                  </span>
+                </h3>
+                <button
+                  onClick={loadHistory}
+                  className="text-xs text-cyan-400 hover:text-cyan-300 flex items-center gap-1 font-semibold"
+                >
+                  <span>🔄</span> Refresh History
+                </button>
+              </div>
+
+              {history.length === 0 ? (
+                <div className="text-center py-10 text-slate-500 text-sm">
+                  No scan history recorded yet. Submit a URL above to perform your first scan.
+                </div>
+              ) : (
+                <div className="overflow-x-auto">
+                  <table className="w-full text-left text-xs">
+                    <thead>
+                      <tr className="border-b border-slate-800 text-slate-400 uppercase tracking-wider font-semibold">
+                        <th className="pb-3 px-3">Target URL</th>
+                        <th className="pb-3 px-3">Verdict</th>
+                        <th className="pb-3 px-3">Confidence</th>
+                        <th className="pb-3 px-3">Risk Level</th>
+                        <th className="pb-3 px-3">Timestamp</th>
+                        <th className="pb-3 px-3 text-right">Action</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-800/60">
+                      {history.map((item, idx) => (
+                        <tr key={idx} className="hover:bg-slate-800/30 transition">
+                          <td className="py-3 px-3 font-mono text-slate-300 max-w-xs truncate" title={item.url}>
+                            {item.url}
+                          </td>
+                          <td className="py-3 px-3">
+                            <span className={`inline-flex items-center px-2 py-0.5 rounded text-[11px] font-bold ${
+                              item.isPhishing
+                                ? 'bg-rose-500/20 text-rose-300 border border-rose-500/30'
+                                : 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30'
+                            }`}>
+                              {item.prediction}
+                            </span>
+                          </td>
+                          <td className="py-3 px-3 code-font text-slate-300">
+                            {(item.confidence * 100).toFixed(1)}%
+                          </td>
+                          <td className="py-3 px-3 font-semibold">
+                            <span className={
+                              item.riskLevel === 'High' ? 'text-rose-400' :
+                              item.riskLevel === 'Medium' ? 'text-amber-400' :
+                              'text-emerald-400'
+                            }>
+                              {item.riskLevel}
+                            </span>
+                          </td>
+                          <td className="py-3 px-3 text-slate-400">
+                            {item.scannedAt ? new Date(item.scannedAt).toLocaleTimeString() : 'Recent'}
+                          </td>
+                          <td className="py-3 px-3 text-right">
+                            <button
+                              onClick={() => { setUrl(item.url); setResult(item); }}
+                              className="text-cyan-400 hover:text-cyan-300 font-semibold text-xs"
+                            >
+                              Inspect
+                            </button>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </div>
+          </main>
+
+          <footer className="border-t border-slate-800/80 py-6 text-center text-xs text-slate-500">
+            CyberShield AI • Powered by UCI PhiUSIIL Phishing URL Dataset, Python Scikit-Learn & Java Spring Boot
+          </footer>
+        </div>
+      );
+    }
+
+    ReactDOM.createRoot(document.getElementById("root")).render(<App />);
+  </script>
+</body>
+</html>

@@ -1,0 +1,26 @@
+# Virtual Environment
+venv/
+env/
+.venv/
+
+# Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Java Maven Build
+backend/target/
+*.class
+*.jar
+*.war
+
+# Large Dataset (downloaded on demand or via script)
+data/*.csv
+
+# IDE & OS files
+.idea/
+.vscode/
+*.swp
+*.DS_Store
+Thumbs.db
